@@ -43,6 +43,38 @@ const switchToGroq = () => {
     }
 };
 
+// Helper: Call Eigen AI with Grant-based Auth
+const callEigenGrantAPI = async (messages: any[], model: string, grant?: GrantAuth): Promise<any> => {
+    const GRANT_API_URL = process.env.EIGEN_GRANT_API_URL || 'https://determinal-api.eigenarcade.com';
+
+    if (!grant) {
+        throw new Error('Grant authentication required for Eigen AI');
+    }
+
+    const response = await fetch(`${GRANT_API_URL}/api/chat/completions`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            messages,
+            model,
+            max_tokens: 2500,
+            seed: 42,
+            grantMessage: grant.grantMessage,
+            grantSignature: grant.grantSignature,
+            walletAddress: grant.walletAddress,
+        }),
+    });
+
+    if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Eigen Grant API error: ${error}`);
+    }
+
+    return await response.json();
+};
+
 const tvly = tavily({ apiKey: process.env.TAVILY_API_KEY || '' });
 const EIGEN_MODEL = process.env.EIGEN_MODEL || 'gpt-oss-120b-f16';
 const GROQ_MODEL = 'llama-3.3-70b-versatile'; // Groq's best model
@@ -64,6 +96,12 @@ export interface GenerateOptions {
 export interface AIResponse<T> {
     result: T;
     signature?: string;
+}
+
+export interface GrantAuth {
+    grantMessage: string;
+    grantSignature: string;
+    walletAddress: string;
 }
 
 // Helper: Resolve Model ID from UI Name
@@ -309,7 +347,7 @@ const getViralContext = (count = 2, intent = 'viral', length = 'medium') => {
 // --- Core Functions ---
 
 // 1. Generate Topics
-export async function generateTopics(input: string, depth: number = 3, model?: string): Promise<AIResponse<string[]>> {
+export async function generateTopics(input: string, depth: number = 3, model?: string, grant?: GrantAuth): Promise<AIResponse<string[]>> {
     const prompt = `
     Generate exactly 10 distinct, viral-worthy LinkedIn post topics based on the user's input: "${input}".
     
@@ -329,11 +367,26 @@ export async function generateTopics(input: string, depth: number = 3, model?: s
     `;
 
     try {
+        // Try Eigen AI with Grant first if grant provided
+        if (grant) {
+            console.log('[AI Service] Using Eigen AI with Grant auth');
+            const response = await callEigenGrantAPI(
+                [{ role: 'user', content: prompt }],
+                resolveModelId(model),
+                grant
+            );
+            const content = response.choices[0]?.message?.content || '[]';
+            const result = cleanAndParseJSON(content);
+            const signature = response.signature;
+            return { result, signature };
+        }
+
+        // Fallback to standard OpenAI client (Groq)
         const completion = await openai.chat.completions.create({
             messages: [{ role: 'user', content: prompt }],
             model: resolveModelId(model),
             temperature: 0.8,
-            max_tokens: 2500, // Ensure enough tokens for 10 topics
+            max_tokens: 2500,
         });
 
         const content = completion.choices[0]?.message?.content || '[]';
@@ -343,6 +396,13 @@ export async function generateTopics(input: string, depth: number = 3, model?: s
         return { result, signature };
     } catch (e: any) {
         console.error("AI Error (Topics):", e?.message || e);
+
+        // If Eigen Grant fails, fallback to Groq
+        if (grant && !isUsingGroq) {
+            console.log('[AI Service] Eigen Grant failed, falling back to Groq');
+            switchToGroq();
+            return generateTopics(input, depth, model); // Retry without grant
+        }
 
         // If authentication error and not using Groq yet, switch and retry
         if (!isUsingGroq && e?.status === 401) {
@@ -355,7 +415,7 @@ export async function generateTopics(input: string, depth: number = 3, model?: s
 }
 
 // 2. Generate Hooks
-export async function generateHooks(topic: string, intent: string = 'viral', model?: string): Promise<AIResponse<string[]>> {
+export async function generateHooks(topic: string, intent: string = 'viral', model?: string, grant?: GrantAuth): Promise<AIResponse<string[]>> {
     const prompt = `
     You are a LinkedIn Viral Content Expert. Write 8 powerful, scroll-stopping hooks for the topic: "${topic}".
     
@@ -391,6 +451,19 @@ export async function generateHooks(topic: string, intent: string = 'viral', mod
     `;
 
     try {
+        // Try Eigen AI with Grant first if grant provided
+        if (grant) {
+            const response = await callEigenGrantAPI(
+                [{ role: 'user', content: prompt }],
+                resolveModelId(model),
+                grant
+            );
+            const content = response.choices[0]?.message?.content || '[]';
+            const result = cleanAndParseJSON(content);
+            const signature = response.signature;
+            return { result, signature };
+        }
+
         const completion = await openai.chat.completions.create({
             messages: [{ role: 'user', content: prompt }],
             model: resolveModelId(model),
@@ -406,6 +479,12 @@ export async function generateHooks(topic: string, intent: string = 'viral', mod
     } catch (e: any) {
         console.error("AI Error (Hooks):", e?.message || e);
 
+        // If Eigen Grant fails, fallback to Groq
+        if (grant && !isUsingGroq) {
+            switchToGroq();
+            return generateHooks(topic, intent, model);
+        }
+
         // If authentication error and not using Groq yet, switch and retry
         if (!isUsingGroq && e?.status === 401) {
             switchToGroq();
@@ -417,7 +496,7 @@ export async function generateHooks(topic: string, intent: string = 'viral', mod
 }
 
 // 3. Generate Body (Array of variations) - THE ROBUST VERSION
-export async function generateBody(hook: string, context: string, intent: string, length: string, model?: string): Promise<AIResponse<string[]>> {
+export async function generateBody(hook: string, context: string, intent: string, length: string, model?: string, grant?: GrantAuth): Promise<AIResponse<string[]>> {
 
     // A. Research Layer (Content)
     let researchContext = '';
@@ -491,6 +570,22 @@ export async function generateBody(hook: string, context: string, intent: string
     `;
 
     try {
+        // Try Eigen AI with Grant first if grant provided
+        if (grant) {
+            const response = await callEigenGrantAPI(
+                [{ role: 'user', content: prompt }],
+                resolveModelId(model),
+                grant
+            );
+            const content = response.choices[0]?.message?.content || '[]';
+            const parsed = cleanAndParseJSON(content);
+            const signature = response.signature;
+            if (Array.isArray(parsed) && parsed.length > 0) {
+                return { result: parsed, signature };
+            }
+            return { result: [content], signature };
+        }
+
         const completion = await openai.chat.completions.create({
             messages: [{ role: 'user', content: prompt }],
             model: resolveModelId(model),
@@ -511,6 +606,12 @@ export async function generateBody(hook: string, context: string, intent: string
     } catch (error: any) {
         console.error('[AI Body] Error:', error?.message || error);
 
+        // If Eigen Grant fails, fallback to Groq
+        if (grant && !isUsingGroq) {
+            switchToGroq();
+            return generateBody(hook, context, intent, length, model);
+        }
+
         // If authentication error and not using Groq yet, switch and retry
         if (!isUsingGroq && error?.status === 401) {
             switchToGroq();
@@ -522,7 +623,7 @@ export async function generateBody(hook: string, context: string, intent: string
 }
 
 // 4. Generate CTA (Call to Action)
-export async function generateCTA(body: string, intent: string, model?: string): Promise<AIResponse<string[]>> {
+export async function generateCTA(body: string, intent: string, model?: string, grant?: GrantAuth): Promise<AIResponse<string[]>> {
     const prompt = `
     You are a LinkedIn engagement expert. Generate 4 compelling Call-To-Actions (CTAs) for a LinkedIn post.
     
@@ -556,6 +657,19 @@ export async function generateCTA(body: string, intent: string, model?: string):
     `;
 
     try {
+        // Try Eigen AI with Grant first if grant provided
+        if (grant) {
+            const response = await callEigenGrantAPI(
+                [{ role: 'user', content: prompt }],
+                resolveModelId(model),
+                grant
+            );
+            const content = response.choices[0]?.message?.content || '[]';
+            const result = cleanAndParseJSON(content);
+            const signature = response.signature;
+            return { result, signature };
+        }
+
         const completion = await openai.chat.completions.create({
             messages: [{ role: 'user', content: prompt }],
             model: resolveModelId(model),
@@ -570,6 +684,12 @@ export async function generateCTA(body: string, intent: string, model?: string):
         return { result, signature };
     } catch (e: any) {
         console.error("AI Error (CTA):", e?.message || e);
+
+        // If Eigen Grant fails, fallback to Groq
+        if (grant && !isUsingGroq) {
+            switchToGroq();
+            return generateCTA(body, intent, model);
+        }
 
         // If authentication error and not using Groq yet, switch and retry
         if (!isUsingGroq && e?.status === 401) {
