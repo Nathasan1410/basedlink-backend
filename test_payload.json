@@ -1,0 +1,6 @@
+{
+    "step": "topics",
+    "input": "Future of AI",
+    "model": "gpt-oss-120b-f16",
+    "researchDepth": 1
+}
