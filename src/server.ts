@@ -6,6 +6,7 @@ import cors from 'cors';
 import generateRouter from './routes/generate';
 import polishRouter from './routes/polish';
 import paymentRouter from './routes/payment';
+import grantRouter from './routes/grant';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -27,6 +28,7 @@ app.use(express.json());
 app.use(generateRouter);
 app.use(polishRouter);
 app.use(paymentRouter);
+app.use(grantRouter);
 
 // Faucet Route (Manual Nonce Fix)
 import { ethers } from 'ethers';
