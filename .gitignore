@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+*.log
+
+# AI Models (too large for git)
+models/
+*.pkl
+*.bin
+*.h5
+*.pt
+*.pth
+*.onnx
+
+# OS
+.DS_Store
+Thumbs.db
