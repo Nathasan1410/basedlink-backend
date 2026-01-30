@@ -533,7 +533,7 @@ export async function generateBody(hook: string, context: string, intent: string
 
     LANGUAGE:
     - Use Bahasa Indonesia conversationally
-        - Keep emoji usage light(1 - 2 max per CTA)
+        - Keep emoji usage light(1-2 max per CTA)
             - Authentic and warm tone
     
     OUTPUT FORMAT:
@@ -600,14 +600,14 @@ export async function generateBody(hook: string, context: string, intent: string
 Original post:
     "${content}"
 
-${ toneInstruction }
-${ emojiInstruction }
+${toneInstruction}
+${emojiInstruction}
 
 FORMATTING RULES(CRITICAL):
-    1. ** Line Breaks **: Add proper spacing between paragraphs(double newline).
-2. ** Visual Hierarchy **: Use CAPS for 1 - 2 key phrases.
-3. ** Readability **: Keep sentences short and punchy.
-4. ** Hashtags **: Add max 5 hashtags at the end.
+    1. **Line Breaks**: Add proper spacing between paragraphs(double newline).
+2. **Visual Hierarchy**: Use CAPS for 1-2 key phrases.
+3. **Readability**: Keep sentences short and punchy.
+4. **Hashtags**: Add max 5 hashtags at the end.
 
 Return ONLY the polished post text, nothing else.`;
 
@@ -635,7 +635,7 @@ Return ONLY the polished post text, nothing else.`;
 
     // 6. Tiered Generation Orchestrator
     export async function generateTieredContent(tier: number, contentId: string): Promise<any> {
-        console.log(`[AI] Generating content for Tier ${ tier }(ID: ${ contentId })`);
+        console.log(`[AI] Generating content for Tier ${tier}(ID: ${contentId})`);
 
         // Default context
         const input = "AI in Marketing";
@@ -693,3 +693,4 @@ Return ONLY the polished post text, nothing else.`;
             throw new Error("AI generation failed");
         }
     }
+
