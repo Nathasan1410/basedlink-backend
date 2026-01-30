@@ -32,15 +32,12 @@ const groqAI = new OpenAI({
 });
 
 // Smart Client Selector with Fallback
-let openai = eigenAI;
-let isUsingGroq = false;
+// Smart Client Selector (Forced to Groq for Simulated Demo)
+let openai = groqAI;
+let isUsingGroq = true;
 
 const switchToGroq = () => {
-    if (!isUsingGroq) {
-        console.log('[AI Service] ⚠️ Switching to Groq fallback due to Eigen AI error');
-        openai = groqAI;
-        isUsingGroq = true;
-    }
+    // Already using Groq
 };
 
 // Helper: Call Eigen AI with Grant-based Auth
@@ -127,70 +124,34 @@ const resolveModelId = (modelName?: string): string => {
 
 // Helper: Robust JSON Cleaner & Parser with Fallback
 const cleanAndParseJSON = (text: string): any => {
-    // 1. Clean markdown code blocks (```json ... ```)
+    console.log('[AI Clean] Raw:', text.substring(0, 50) + '...');
+
+    // 1. Clean markdown code blocks
     let cleaned = text.replace(/```json/gi, '').replace(/```/g, '').trim();
 
-    // 2. Try JSON Extraction
-    try {
-        const firstOpen = cleaned.indexOf('[');
-        const lastClose = cleaned.lastIndexOf(']');
-
-        if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
-            const potentialJson = cleaned.substring(firstOpen, lastClose + 1);
-            const parsed = JSON.parse(potentialJson);
-            if (Array.isArray(parsed)) return parsed;
-        }
-
-        // Try fixing newlines if strict parse failed
+    // 2. Try Regex Extraction of Array [ ... ]
+    const arrayMatch = cleaned.match(/\[([\s\S]*?)\]/);
+    if (arrayMatch) {
         try {
-            const fixed = cleaned.replace(/\n\s*(?!["}\]])/g, "\\n");
-            const parsed = JSON.parse(fixed);
-            if (Array.isArray(parsed)) return parsed;
-        } catch (e) { }
-
-    } catch (e) {
-        console.log("JSON Parse Error, trying fallback:", e);
+            const parsed = JSON.parse(arrayMatch[0]);
+            if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        } catch (e) { console.log('Regex JSON failed'); }
     }
 
-    console.log("JSON Extraction failed, attempting manual split for text:", text.substring(0, 50) + "...");
+    // 3. Fallback: Split by lines (if AI gave a list)
+    const lines = text.split('\n')
+        .map(l => l.trim())
+        .filter(l => l.length > 10)
+        .filter(l => !l.toLowerCase().includes('here are'))
+        .filter(l => !l.startsWith('['))
+        .filter(l => !l.startsWith(']'))
+        .map(l => l.replace(/^\d+[\.\)]\s*/, '')) // Remove "1. ", "2. "
+        .map(l => l.replace(/^["']|["']$/g, '')) // Remove quotes
+        .map(l => l.replace(/,$/, '')); // Remove trailing comma
 
-    // 3. Fallback: Manual Split
-    // A: Check if it's a comma-separated list of quoted strings
-    if (cleaned.includes('", "') || cleaned.startsWith('"')) {
-        const quotedItems = cleaned.split(/",\s*|,\s*"/).map(item =>
-            item.replace(/^\[?"|"?\]?$/g, '').trim()
-        ).filter(i => i.length > 5);
-        if (quotedItems.length > 1) return quotedItems;
-    }
+    if (lines.length > 0) return lines;
 
-    // B: Regex looks for: Newline + (Number + dot/paren OR Bullet OR "Option X") + Space
-    const listItems = text.split(/(?:\r\n|\r|\n)\s*(?:[\d]+[\.\)]|\-|\*|•|Option \d+|Variation \d+)\s+/i);
-
-    const validItems = listItems
-        .map(item => item.trim())
-        .filter(item => {
-            const lower = item.toLowerCase();
-            if (item.length < 5) return false; // Lowered threshold slightly
-            if (lower.startsWith("here are")) return false;
-            if (lower.startsWith("berikut adalah")) return false;
-            if (lower.startsWith("sure!")) return false;
-            if (lower.includes("linkedin post")) return false;
-            // Remove artifacts like [ or " at start if manual split caught them
-            return true;
-        })
-        .map(item => item.replace(/^\["|"$|^"|",?$/g, '').trim()); // Clean extra quotes/brackets
-
-    if (validItems.length > 1) {
-        return validItems;
-    }
-
-    // 4. Last Resort: Split by double newlines
-    const paragraphs = text.split(/\n\n+/).map(p => p.trim()).filter(p => p.length > 20);
-    if (paragraphs.length > 1) {
-        return paragraphs;
-    }
-
-    return [text];
+    return []; // Return empty only if totally failed
 };
 
 // --- Helpers from "Highly Modelled" Logic ---
@@ -367,18 +328,10 @@ export async function generateTopics(input: string, depth: number = 3, model?: s
     `;
 
     try {
-        // Try Eigen AI with Grant first if grant provided
+        // SIMULATED DEMO: Bypass Eigen AI even if grant is present
+        // if (grant) { ... } -> Skipped for better quality via Groq
         if (grant) {
-            console.log('[AI Service] Using Eigen AI with Grant auth');
-            const response = await callEigenGrantAPI(
-                [{ role: 'user', content: prompt }],
-                resolveModelId(model),
-                grant
-            );
-            const content = response.choices[0]?.message?.content || '[]';
-            const result = cleanAndParseJSON(content);
-            const signature = response.signature;
-            return { result, signature };
+            console.log('[AI Service] Grant auth received, but forcing Groq for Simulated Demo');
         }
 
         // Fallback to standard OpenAI client (Groq)
@@ -443,364 +396,300 @@ export async function generateHooks(topic: string, intent: string = 'viral', mod
     
     OUTPUT FORMAT:
     - STRICT JSON ARRAY ONLY.
-    - DO NOT include "Here are...", "Below are...", or any intro text.
-    - Start immediately with [.
-    - End immediately with ].
+    - NO Markdown code blocks (no \`\`\`json).
+    - NO introductory text.
+    - Start with [. End with ].
+    // Get viral context for few-shot learning
+    const viralContext = getViralContext(3, intent).map(p => `- "${p.hook}"`).join('\n');
+
+    const viralPrompt = `
+    You are a LinkedIn Viral Content Expert.
+        Topic: "${topic}"
+    Intent: ${ intent.toUpperCase() }
     
-    Example: ["Hook 1...", "Hook 2...", "Hook 3...", "Hook 4...", "Hook 5...", "Hook 6...", "Hook 7...", "Hook 8..."]
+    Analyze these REAL VIRAL HOOKS from our database:
+    ${ viralContext }
+
+    TASK: Write 8 NEW powerful hooks for the topic above. 
+    Mimic the style, punchiness, and psychological triggers of the examples provided.
+    
+    HOOK RULES:
+    1. ** NO Generic Openers ** (Avoid: "In today's fast world...")
+    2. ** Pattern Interruption ** (Start with a number, a bold statement, or a question)
+    3. ** Specifics ** (Use brackets[Number], [Time], [Result] where users can fill in blanks)
+    
+    OUTPUT FORMAT:
+    - Pure plain text.
+    - Separate each hook with "|||".
+    - NO Numbering.NO Intro.
+    - Example: Hook 1... ||| Hook 2... ||| Hook 3...
     `;
 
     try {
+        console.log(`[AI Hook] Generating with viral context length: ${ viralContext.length } `);
+
         // Try Eigen AI with Grant first if grant provided
         if (grant) {
             const response = await callEigenGrantAPI(
-                [{ role: 'user', content: prompt }],
+                [{ role: 'user', content: viralPrompt }],
                 resolveModelId(model),
                 grant
             );
-            const content = response.choices[0]?.message?.content || '[]';
-            const result = cleanAndParseJSON(content);
-            const signature = response.signature;
-            return { result, signature };
+            const content = response.choices[0]?.message?.content || '';
+            const result = content.split('|||').map(h => h.trim()).filter(h => h.length > 5);
+            return { result, signature: response.signature };
         }
 
         const completion = await openai.chat.completions.create({
-            messages: [{ role: 'user', content: prompt }],
+            messages: [{ role: 'user', content: viralPrompt }],
             model: resolveModelId(model),
-            temperature: 0.85,
+            temperature: 0.9,
             max_tokens: 2500,
         });
 
-        const content = completion.choices[0]?.message?.content || '[]';
-        const result = cleanAndParseJSON(content);
-        const signature = (completion as any).signature;
+        const content = completion.choices[0]?.message?.content || '';
+        const result = content.split('|||').map(h => h.trim()).filter(h => h.length > 5);
 
-        return { result, signature };
+        return { result, signature: (completion as any).signature };
     } catch (e: any) {
         console.error("AI Error (Hooks):", e?.message || e);
-
-        // If Eigen Grant fails, fallback to Groq
-        if (grant && !isUsingGroq) {
-            switchToGroq();
-            return generateHooks(topic, intent, model);
-        }
-
-        // If authentication error and not using Groq yet, switch and retry
-        if (!isUsingGroq && e?.status === 401) {
-            switchToGroq();
-            return generateHooks(topic, intent, model);
-        }
-
-        return { result: [`${topic} is important because...`] };
+        if (grant && !isUsingGroq) { switchToGroq(); return generateHooks(topic, intent, model); }
+        if (!isUsingGroq && e?.status === 401) { switchToGroq(); return generateHooks(topic, intent, model); }
+        return { result: [`${ topic } is important because...`] };
     }
 }
 
 // 3. Generate Body (Array of variations) - THE ROBUST VERSION
 export async function generateBody(hook: string, context: string, intent: string, length: string, model?: string, grant?: GrantAuth): Promise<AIResponse<string[]>> {
 
-    // A. Research Layer (Content)
-    let researchContext = '';
-    try {
-        const search = await tvly.search(context || hook, { maxResults: 2 });
-        researchContext = search.results.map((r: any) => `- ${r.title}: ${r.content}`).join('\n');
-    } catch (e) { console.log('Research failed', e); }
+        // A. Research Layer (Content)
+        let researchContext = '';
+        try {
+            const search = await tvly.search(context || hook, { maxResults: 2 });
+            researchContext = search.results.map((r: any) => `- ${ r.title }: ${ r.content } `).join('\n');
+        } catch (e) { console.log('Research failed', e); }
 
-    // B. Style Layer
-    const viralExamples = getViralContext(2, intent, length).map((post: any, i: number) =>
-        `[Example ${i + 1} - Style Reference]\n${post.body}`
-    ).join('\n\n');
+        const prompt = `
+    You are a LinkedIn Ghostwriter.Expert at viral content.
 
-    // C. Instructions
-    let lengthInstruction = "MEDIUM LENGTH. 100-200 words. At least 8 sentences.";
-    if (length === 'short') lengthInstruction = "SHORT & PUNCHY. 50-100 words. At least 5 sentences. Keep it tight and impactful.";
-    else if (length === 'long') lengthInstruction = "LONG FORM. 200-300 words. Deep analysis with multiple sections.";
+        Topic: "${context}"
+    Hook: "${hook}"
 
-    const toneInstruction = getToneInstruction(5); // Default tone if not passed, TODO: propagate settings
-    const emojiInstruction = getEmojiInstruction('moderate');
-    const languageInstruction = getLanguageInstruction('id'); // Default ID, TODO: propagate settings
-
-    const prompt = `
-    You are a LinkedIn Ghostwriter. Expert at viral content that gets engagement.
-    
-    Write the MAIN BODY for a LinkedIn post using this Hook: "${hook}".
-    Topic Context: "${context}".
-    Length: ${lengthInstruction}
-    Intent: ${intent.toUpperCase()}
-    
-    ${languageInstruction}
-    ${toneInstruction}
-    ${emojiInstruction}
-    
-    CONTEXT from Web Research:
-    ${researchContext}
-
-    STYLE REFERENCES (Mimic these patterns):
-    ${viralExamples}
-
-    CRITICAL WRITING RULES:
-    1. **One Idea Per Line** - Break thoughts into separate lines for readability
-    2. **Short Sentences** - Max 15 words per sentence
-    3. **Active Voice** - "I discovered" not "It was discovered"
-    4. **Visual Hierarchy** - Use line breaks generously
-    5. **No Fluff** - Every word must add value
-    6. **Personal Stories** - Use "Saya", "Aku" to make it relatable
-    7. **Specific Examples** - Real numbers, names, situations
-    8. **Pattern: Problem → Insight → Action**
-    
-    FORMATTING (MANDATORY):
-    - **CRITICAL**: Use double newline characters (\\n\\n) between EVERY paragraph or list item.
-    - **DO NOT** write long walls of text.
-    - **DO NOT** mimic the dense formatting of the examples above. YOUR formatting must be cleaner.
-    - Single line for impact statements
-    - Natural emoji placement (not forced)
-    
-    INSTRUCTIONS:
-    - Generate EXACTLY 4 distinct variations
-    - Each variation should have a different angle/approach
-    - End with a strong closing thought (not CTA - that comes later)
+    Goal: Write 4 DIFFERENT variations of tags formatted as LinkedIn post bodies.
     
     OUTPUT FORMAT:
-    - STRICT JSON ARRAY ONLY containing 4 strings.
-    - The strings MUST contain \\n\\n for line breaks.
-    - DO NOT include "Here are...", "Below are...", or any intro text.
-    - Start immediately with [.
-    - End immediately with ].
-    
-    Example format: ["Body Option 1...\\n\\nNEXT PARAGRAPH...\\n\\nfinal point.", "Body Option 2..."]
+    - Pure plain text.
+    - Separate each variation with "|||".
+    - No JSON.
+    - No intro text.
+    - Use double newlines for paragraphs.
+
+        Example:
+    Variation 1 text... ||| Variation 2 text... ||| Variation 3 text... ||| Variation 4 text...
     `;
 
-    try {
-        // Try Eigen AI with Grant first if grant provided
-        if (grant) {
-            const response = await callEigenGrantAPI(
-                [{ role: 'user', content: prompt }],
-                resolveModelId(model),
-                grant
-            );
-            const content = response.choices[0]?.message?.content || '[]';
-            const parsed = cleanAndParseJSON(content);
-            const signature = response.signature;
-            if (Array.isArray(parsed) && parsed.length > 0) {
-                return { result: parsed, signature };
-            }
-            return { result: [content], signature };
+        try {
+            const completion = await openai.chat.completions.create({
+                messages: [{ role: 'user', content: prompt }],
+                model: resolveModelId(model),
+                temperature: 0.85,
+                max_tokens: 3500,
+            });
+
+            const content = completion.choices[0]?.message?.content || '';
+
+            let bodies = content.split('|||').map(b => b.trim()).filter(b => b.length > 10);
+            if (bodies.length === 0) bodies = [content];
+
+            const signature = "0xSIMULATED_DEMO_SIGNATURE_BY_GROQ";
+
+            return { result: bodies, signature };
+        } catch (error: any) {
+            console.error('[AI Body] Error:', error?.message || error);
+            return { result: ["Error generating body. Please try again."] };
         }
-
-        const completion = await openai.chat.completions.create({
-            messages: [{ role: 'user', content: prompt }],
-            model: resolveModelId(model),
-            temperature: 0.85,
-            max_tokens: 3500,
-        });
-
-        const content = completion.choices[0]?.message?.content || '[]';
-        console.log('[AI Body] Response preview:', content.substring(0, 100));
-
-        const parsed = cleanAndParseJSON(content);
-        const signature = (completion as any).signature;
-
-        if (Array.isArray(parsed) && parsed.length > 0) {
-            return { result: parsed, signature };
-        }
-        return { result: [content], signature };
-    } catch (error: any) {
-        console.error('[AI Body] Error:', error?.message || error);
-
-        // If Eigen Grant fails, fallback to Groq
-        if (grant && !isUsingGroq) {
-            switchToGroq();
-            return generateBody(hook, context, intent, length, model);
-        }
-
-        // If authentication error and not using Groq yet, switch and retry
-        if (!isUsingGroq && error?.status === 401) {
-            switchToGroq();
-            return generateBody(hook, context, intent, length, model);
-        }
-
-        return { result: ["Error generating body. Please try again."] };
     }
-}
 
-// 4. Generate CTA (Call to Action)
-export async function generateCTA(body: string, intent: string, model?: string, grant?: GrantAuth): Promise<AIResponse<string[]>> {
-    const prompt = `
-    You are a LinkedIn engagement expert. Generate 4 compelling Call-To-Actions (CTAs) for a LinkedIn post.
+
+    // 4. Generate CTA (Enriched with Viral Data)
+    export async function generateCTA(body: string, intent: string, model?: string, grant?: GrantAuth): Promise<AIResponse<string[]>> {
+        const prompt = `
+    You are a LinkedIn engagement expert.Generate 4 compelling Call - To - Actions(CTAs) for a LinkedIn post.
     
     Post Body Context: "${body.substring(0, 150)}..."
-    Intent: ${intent.toUpperCase()}
+    Intent: ${ intent.toUpperCase() }
     
     CTA RULES:
-    1. **Keep it SHORT** - Max 2 sentences
-    2. **Engage, Don't Sell** - Ask questions, invite discussion
-    3. **Match the Tone** - Align with the post's vibe
-    4. **Natural Flow** - Should feel like a conversation closer
+    1. ** Keep it SHORT ** - Max 2 sentences
+    2. ** Engage, Don't Sell** - Ask questions, invite discussion
+    3. ** Match the Tone ** - Align with the post's vibe
+    4. ** Natural Flow ** - Should feel like a conversation closer
     
     CTA TYPES TO VARY:
     - Question: "Setuju? Atau ada perspektif lain?"
-    - Invitation: "Share pengalaman kalian di comments 👇"
-    - Reflection: "Bagaimana menurut kalian?"
-    - Community: "Tag someone yang perlu baca ini!"
-    
+        - Invitation: "Share pengalaman kalian di comments 👇"
+            - Reflection: "Bagaimana menurut kalian?"
+                - Community: "Tag someone yang perlu baca ini!"
+
     LANGUAGE:
     - Use Bahasa Indonesia conversationally
-    - Keep emoji usage light (1-2 max per CTA)
-    - Authentic and warm tone
+        - Keep emoji usage light(1 - 2 max per CTA)
+            - Authentic and warm tone
     
     OUTPUT FORMAT:
     - STRICT JSON ARRAY ONLY.
     - DO NOT include "Here are...", "Below are...", or any intro text.
     - Start immediately with [.
     - End immediately with ].
-    
+
     Example: ["CTA 1", "CTA 2", "CTA 3", "CTA 4"]
     `;
 
-    try {
-        // Try Eigen AI with Grant first if grant provided
-        if (grant) {
-            const response = await callEigenGrantAPI(
-                [{ role: 'user', content: prompt }],
-                resolveModelId(model),
-                grant
-            );
-            const content = response.choices[0]?.message?.content || '[]';
+        try {
+            // Try Eigen AI with Grant first if grant provided
+            if (grant) {
+                const response = await callEigenGrantAPI(
+                    [{ role: 'user', content: prompt }],
+                    resolveModelId(model),
+                    grant
+                );
+                const content = response.choices[0]?.message?.content || '[]';
+                const result = cleanAndParseJSON(content);
+                const signature = response.signature;
+                return { result, signature };
+            }
+
+            const completion = await openai.chat.completions.create({
+                messages: [{ role: 'user', content: prompt }],
+                model: resolveModelId(model),
+                temperature: 0.75,
+                max_tokens: 1500,
+            });
+
+            const content = completion.choices[0]?.message?.content || '[]';
             const result = cleanAndParseJSON(content);
-            const signature = response.signature;
+            const signature = (completion as any).signature;
+
             return { result, signature };
+        } catch (e: any) {
+            console.error("AI Error (CTA):", e?.message || e);
+
+            // If Eigen Grant fails, fallback to Groq
+            if (grant && !isUsingGroq) {
+                switchToGroq();
+                return generateCTA(body, intent, model);
+            }
+
+            // If authentication error and not using Groq yet, switch and retry
+            if (!isUsingGroq && e?.status === 401) {
+                switchToGroq();
+                return generateCTA(body, intent, model);
+            }
+
+            return { result: ["Bagaimana menurut kalian?", "Setuju? 👇", "Share pengalaman kalian!", "Thoughts?"] };
         }
-
-        const completion = await openai.chat.completions.create({
-            messages: [{ role: 'user', content: prompt }],
-            model: resolveModelId(model),
-            temperature: 0.75,
-            max_tokens: 1500,
-        });
-
-        const content = completion.choices[0]?.message?.content || '[]';
-        const result = cleanAndParseJSON(content);
-        const signature = (completion as any).signature;
-
-        return { result, signature };
-    } catch (e: any) {
-        console.error("AI Error (CTA):", e?.message || e);
-
-        // If Eigen Grant fails, fallback to Groq
-        if (grant && !isUsingGroq) {
-            switchToGroq();
-            return generateCTA(body, intent, model);
-        }
-
-        // If authentication error and not using Groq yet, switch and retry
-        if (!isUsingGroq && e?.status === 401) {
-            switchToGroq();
-            return generateCTA(body, intent, model);
-        }
-
-        return { result: ["Bagaimana menurut kalian?", "Setuju? 👇", "Share pengalaman kalian!", "Thoughts?"] };
     }
-}
 
-// 5. Polish (Final) - ROBUST VERSION
-export async function polishContent(content: string, tone: number, emojiDensity: number): Promise<AIResponse<string>> {
-    const emojiInstruction = getEmojiInstruction(emojiDensity);
-    const toneInstruction = getToneInstruction(tone);
+    // 5. Polish (Final) - ROBUST VERSION
+    export async function polishContent(content: string, tone: number, emojiDensity: number): Promise<AIResponse<string>> {
+        const emojiInstruction = getEmojiInstruction(emojiDensity);
+        const toneInstruction = getToneInstruction(tone);
 
-    const prompt = `Polish this LinkedIn post following this EXACT structure for consistency:
+        const prompt = `Polish this LinkedIn post following this EXACT structure for consistency:
 
 Original post:
-"${content}"
+    "${content}"
 
-${toneInstruction}
-${emojiInstruction}
+${ toneInstruction }
+${ emojiInstruction }
 
-FORMATTING RULES (CRITICAL):
-1. **Line Breaks**: Add proper spacing between paragraphs (double newline).
-2. **Visual Hierarchy**: Use CAPS for 1-2 key phrases.
-3. **Readability**: Keep sentences short and punchy.
-4. **Hashtags**: Add max 5 hashtags at the end.
+FORMATTING RULES(CRITICAL):
+    1. ** Line Breaks **: Add proper spacing between paragraphs(double newline).
+2. ** Visual Hierarchy **: Use CAPS for 1 - 2 key phrases.
+3. ** Readability **: Keep sentences short and punchy.
+4. ** Hashtags **: Add max 5 hashtags at the end.
 
 Return ONLY the polished post text, nothing else.`;
 
-    try {
-        const completion = await openai.chat.completions.create({
-            messages: [{ role: 'user', content: prompt }],
-            model: resolveModelId(),
-            temperature: 0.3,
-        });
-        const result = completion.choices[0]?.message?.content || content;
-        const signature = (completion as any).signature;
-        return { result, signature };
-    } catch (e: any) {
-        console.error("AI Error (Polish):", e?.message || e);
+        try {
+            const completion = await openai.chat.completions.create({
+                messages: [{ role: 'user', content: prompt }],
+                model: resolveModelId(),
+                temperature: 0.3,
+            });
+            const result = completion.choices[0]?.message?.content || content;
+            const signature = (completion as any).signature;
+            return { result, signature };
+        } catch (e: any) {
+            console.error("AI Error (Polish):", e?.message || e);
 
-        // If authentication error and not using Groq yet, switch and retry
-        if (!isUsingGroq && e?.status === 401) {
-            switchToGroq();
-            return polishContent(content, tone, emojiDensity);
+            // If authentication error and not using Groq yet, switch and retry
+            if (!isUsingGroq && e?.status === 401) {
+                switchToGroq();
+                return polishContent(content, tone, emojiDensity);
+            }
+
+            return { result: content };
         }
-
-        return { result: content };
     }
-}
 
-// 6. Tiered Generation Orchestrator
-export async function generateTieredContent(tier: number, contentId: string): Promise<any> {
-    console.log(`[AI] Generating content for Tier ${tier} (ID: ${contentId})`);
+    // 6. Tiered Generation Orchestrator
+    export async function generateTieredContent(tier: number, contentId: string): Promise<any> {
+        console.log(`[AI] Generating content for Tier ${ tier }(ID: ${ contentId })`);
 
-    // Default context
-    const input = "AI in Marketing";
-    const intent = "educational";
+        // Default context
+        const input = "AI in Marketing";
+        const intent = "educational";
 
-    try {
-        if (tier === 1) {
-            const topicsRes = await generateTopics(input);
-            const selectedTopic = topicsRes.result[0];
-            const hooksRes = await generateHooks(selectedTopic, intent);
-            const bodiesRes = await generateBody(hooksRes.result[0], selectedTopic, intent, "short");
+        try {
+            if (tier === 1) {
+                const topicsRes = await generateTopics(input);
+                const selectedTopic = topicsRes.result[0];
+                const hooksRes = await generateHooks(selectedTopic, intent);
+                const bodiesRes = await generateBody(hooksRes.result[0], selectedTopic, intent, "short");
 
-            return {
-                tier: 1,
-                topic: selectedTopic,
-                hook: hooksRes.result[0],
-                body: bodiesRes.result[0],
-                status: "completed"
-            };
+                return {
+                    tier: 1,
+                    topic: selectedTopic,
+                    hook: hooksRes.result[0],
+                    body: bodiesRes.result[0],
+                    status: "completed"
+                };
+            }
+            else if (tier === 2) {
+                const topicsRes = await generateTopics(input);
+                const selectedTopic = topicsRes.result[0];
+                const hooksRes = await generateHooks(selectedTopic, intent);
+                const bodiesRes = await generateBody(hooksRes.result[0], selectedTopic, intent, "medium");
+
+                return {
+                    tier: 2,
+                    topic: selectedTopic,
+                    hooks: hooksRes.result,
+                    bodyOptions: bodiesRes.result,
+                    status: "completed"
+                };
+            }
+            else if (tier === 3) {
+                const topicsRes = await generateTopics(input);
+                const selectedTopic = topicsRes.result[0];
+                const hooksRes = await generateHooks(selectedTopic, intent);
+                const bodiesRes = await generateBody(hooksRes.result[0], selectedTopic, intent, "long");
+                const ctasRes = await generateCTA(bodiesRes.result[0], intent);
+                const polishedRes = await polishContent(bodiesRes.result[0], 8, 5);
+
+                return {
+                    tier: 3,
+                    topic: selectedTopic,
+                    hooks: hooksRes.result,
+                    bodies: bodiesRes.result,
+                    ctas: ctasRes.result,
+                    finalPolished: polishedRes.result,
+                    status: "completed"
+                };
+            }
+        } catch (error) {
+            console.error("AI Generation Failed:", error);
+            throw new Error("AI generation failed");
         }
-        else if (tier === 2) {
-            const topicsRes = await generateTopics(input);
-            const selectedTopic = topicsRes.result[0];
-            const hooksRes = await generateHooks(selectedTopic, intent);
-            const bodiesRes = await generateBody(hooksRes.result[0], selectedTopic, intent, "medium");
-
-            return {
-                tier: 2,
-                topic: selectedTopic,
-                hooks: hooksRes.result,
-                bodyOptions: bodiesRes.result,
-                status: "completed"
-            };
-        }
-        else if (tier === 3) {
-            const topicsRes = await generateTopics(input);
-            const selectedTopic = topicsRes.result[0];
-            const hooksRes = await generateHooks(selectedTopic, intent);
-            const bodiesRes = await generateBody(hooksRes.result[0], selectedTopic, intent, "long");
-            const ctasRes = await generateCTA(bodiesRes.result[0], intent);
-            const polishedRes = await polishContent(bodiesRes.result[0], 8, 5);
-
-            return {
-                tier: 3,
-                topic: selectedTopic,
-                hooks: hooksRes.result,
-                bodies: bodiesRes.result,
-                ctas: ctasRes.result,
-                finalPolished: polishedRes.result,
-                status: "completed"
-            };
-        }
-    } catch (error) {
-        console.error("AI Generation Failed:", error);
-        throw new Error("AI generation failed");
     }
-}

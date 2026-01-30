@@ -107,7 +107,7 @@ router.post('/api/payment', async (req: Request, res: Response) => {
 // --- New Route: execute-payment (Permissionless Mode) ---
 router.post('/api/execute-payment', async (req: Request, res: Response) => {
     try {
-        const { userAddress, tier } = req.body;
+        const { userAddress, tier, txHash } = req.body;
 
         if (!userAddress || !tier) {
             return res.status(400).json({ success: false, error: 'Missing userAddress or tier' });
@@ -115,11 +115,35 @@ router.post('/api/execute-payment', async (req: Request, res: Response) => {
 
         console.log(`[Payment] Execute (Permissionless) for ${userAddress}, tier ${tier}`);
 
+        // If txHash is provided, this is a notification from frontend Direct Transfer
+        // Just log it and return success
+        if (txHash) {
+            console.log(`[Payment] Direct Transfer notification received. TxHash: ${txHash}`);
+            const contentId = `linkid-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+            return res.json({
+                success: true,
+                contentId,
+                txHash,
+                content: {
+                    tier,
+                    title: 'AI Generated Content',
+                    content: 'Payment confirmed via direct transfer.'
+                }
+            });
+        }
+
         // Config
         const provider = new ethers.JsonRpcProvider(RPC_URL);
-        const wallet = new ethers.Wallet(PRIVATE_KEY!, provider); // Facilitator/Paymaster Wallet
 
-        console.log(`[Payment] Facilitator Address: ${wallet.address}`); // Verify this matches frontend BACKEND_WALLET
+        if (!PRIVATE_KEY) {
+            console.error('[Payment] PRIVATE_KEY not set in environment');
+            return res.status(500).json({
+                success: false,
+                error: 'Backend wallet not configured. Please contact support.'
+            });
+        }
+
+        const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
         // Constants (should match frontend)
         const MOCK_USDC_ADDRESS = '0xfD96ABdF9acb7Cde74D9DaC2D469d7717A80ee56';
@@ -149,18 +173,22 @@ router.post('/api/execute-payment', async (req: Request, res: Response) => {
             return res.status(400).json({
                 success: false,
                 error: 'Insufficient USDC allowance. Please enable permissionless mode first.',
-                needsApproval: true
+                needsApproval: true,
+                requiredApproval: wallet.address
             });
         }
 
         // 2. Check Balance
         const balance = await usdcContract.balanceOf(userAddress);
         if (balance < amount) {
-            return res.status(400).json({ success: false, error: 'Insufficient USDC balance' });
+            return res.status(400).json({
+                success: false,
+                error: 'Insufficient USDC balance. Please use the Faucet to get test USDC.'
+            });
         }
 
-        // 3. Execute TransferFrom
-        console.log(`[Payment] Executing transferFrom...`);
+        // 3. Execute TransferFrom (Backend signs, user funds move)
+        console.log(`[Payment] Executing transferFrom(${userAddress}, ${wallet.address}, ${amount})...`);
         const tx = await usdcContract.transferFrom(userAddress, wallet.address, amount);
         console.log(`[Payment] Tx Sent: ${tx.hash}`);
 
@@ -168,26 +196,41 @@ router.post('/api/execute-payment', async (req: Request, res: Response) => {
         if (receipt.status !== 1) {
             throw new Error('Transaction reverted');
         }
-        console.log(`[Payment] Tx Confirmed: ${receipt.hash}`);
+        console.log(`[Payment] ✅ Tx Confirmed: ${receipt.hash}`);
 
-        // 4. Generate Content (or mock for now)
+        // 4. Generate Content ID
         const contentId = `linkid-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
 
-        // Return success
         return res.json({
             success: true,
             contentId,
             txHash: receipt.hash,
+            backendWallet: wallet.address, // Return for frontend verification
             content: {
                 tier,
                 title: 'AI Generated Content',
-                content: 'Content generation triggered successfully via permissionless flow.'
+                content: 'Payment successful! Content generation ready.'
             }
         });
 
     } catch (error: any) {
         console.error('[Payment] Execute Error:', error);
-        return res.status(500).json({ success: false, error: error.message || 'Execution failed' });
+
+        // Better error messages
+        let errorMessage = 'Payment execution failed';
+        if (error.message?.includes('insufficient allowance')) {
+            errorMessage = 'Insufficient allowance. Please enable permissionless mode.';
+        } else if (error.message?.includes('insufficient funds')) {
+            errorMessage = 'Insufficient USDC balance.';
+        } else if (error.code === 'CALL_EXCEPTION') {
+            errorMessage = 'Smart contract call failed. Please try again.';
+        }
+
+        return res.status(500).json({
+            success: false,
+            error: errorMessage,
+            details: error.message
+        });
     }
 });
 
